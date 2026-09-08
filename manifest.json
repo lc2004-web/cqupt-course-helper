@@ -1,0 +1,67 @@
+{
+  "manifest_version": 3,
+  "name": "CQUPT 研究生选课辅助器",
+  "version": "2.5.0",
+  "description": "从培养方案导入课程编号并核对最低学分，自动同步登录状态、体检和恢复监听，并从可用教学班中自动勾选一个；最终提交由用户确认。",
+  "permissions": [
+    "activeTab",
+    "notifications",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://gs.cqupt.edu.cn/*",
+    "https://ids.cqupt.edu.cn/*",
+    "https://i.cqupt.edu.cn/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "CQUPT 选课辅助器",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gs.cqupt.edu.cn/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": [
+        "https://ids.cqupt.edu.cn/authserver/login*"
+      ],
+      "js": [
+        "login.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://i.cqupt.edu.cn/*"
+      ],
+      "js": [
+        "portal.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  }
+}

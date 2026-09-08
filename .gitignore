@@ -1,0 +1,8 @@
+# Local browser and packaging artifacts
+*.crx
+*.pem
+popup-*-profile/
+
+# OS metadata
+.DS_Store
+Thumbs.db
