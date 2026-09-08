@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CQUPT 研究生选课辅助器",
-  "version": "2.5.0",
-  "description": "从培养方案导入课程编号并核对最低学分，自动同步登录状态、体检和恢复监听，并从可用教学班中自动勾选一个；最终提交由用户确认。",
+  "version": "2.6.0",
+  "description": "从培养方案导入课程并核对最低学分，支持按排课表设置教师与教学班偏好，监听时优先选择偏好班；最终提交由用户确认。",
   "permissions": [
     "activeTab",
     "notifications",

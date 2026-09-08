@@ -53,10 +53,19 @@
     <label class="field-label" for="targets">目标课程编号</label>
     <textarea id="targets" spellcheck="false" placeholder="每行一个准确课程编号，例如：&#10;M0130005&#10;M0150023"></textarea>
 
+    <section id="preferenceCard" class="preference-card" hidden>
+      <div class="preference-heading">
+        <strong>教师与班级偏好</strong>
+        <span id="preferenceSummary"></span>
+      </div>
+      <p>优先选择已设置的教学班；偏好班不可用时，自动选择其他可用班。</p>
+      <div id="preferenceRows" class="preference-rows"></div>
+    </section>
+
     <section class="card">
       <label class="toggle"><input type="checkbox" id="autoRefresh"><span>低频自动刷新</span></label>
-      <label class="number-row"><span>刷新间隔</span><input type="number" id="refreshSeconds" min="10" max="600"><span>秒</span></label>
-      <div class="mode-note">发现目标后自动选班：只有一个可用班时直接勾选，多个可用班时随机勾选一个。</div>
+      <label class="number-row"><span>刷新间隔</span><input type="number" id="refreshSeconds" min="1" max="600"><span>秒</span></label>
+      <div class="mode-note">发现目标后自动选班：优先选择偏好班；未设置或偏好班不可用时选择其他可用班。</div>
     </section>
 
     <div class="actions">
@@ -76,7 +85,7 @@
     <section id="importSuccess" class="success-dialog" hidden>
       <strong>✓ 导入成功</strong>
       <p id="importSuccessText"></p>
-      <button id="dismissImportSuccess" type="button">知道了</button>
+      <button id="dismissImportSuccess" type="button">设置教师/班级偏好</button>
     </section>
 
     <div id="status" class="status">正在读取状态…</div>

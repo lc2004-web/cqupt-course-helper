@@ -4,9 +4,13 @@ const DEFAULT_CONFIG = {
   targetsText: '',
   autoRefresh: true,
   refreshSeconds: 15,
+  classPreferences: {},
 };
 
 const LOGIN_URL = 'https://ids.cqupt.edu.cn/authserver/login?service=https%3A%2F%2Fi.cqupt.edu.cn%2Flogin%23%2F';
+const SCHEDULE_CATALOG_URL = 'course-schedule-2026-2027.json';
+let scheduleCatalog = { courses: {}, courseCount: 0, classCount: 0 };
+let classPreferences = {};
 const elements = {
   loginCard: document.getElementById('loginCard'),
   courseWorkspace: document.getElementById('courseWorkspace'),
@@ -19,6 +23,9 @@ const elements = {
   oneClickLogin: document.getElementById('oneClickLogin'),
   loginStatus: document.getElementById('loginStatus'),
   targets: document.getElementById('targets'),
+  preferenceCard: document.getElementById('preferenceCard'),
+  preferenceSummary: document.getElementById('preferenceSummary'),
+  preferenceRows: document.getElementById('preferenceRows'),
   autoRefresh: document.getElementById('autoRefresh'),
   refreshSeconds: document.getElementById('refreshSeconds'),
   planGuide: document.getElementById('planGuide'),
@@ -39,14 +46,16 @@ const elements = {
 function clampRefreshSeconds(value) {
   const number = Number.parseInt(value, 10);
   if (!Number.isFinite(number)) return DEFAULT_CONFIG.refreshSeconds;
-  return Math.min(600, Math.max(10, number));
+  return Math.min(600, Math.max(1, number));
 }
 
 function readConfig() {
+  const codes = parseCourseCodes(elements.targets.value).codes;
   return {
     targetsText: elements.targets.value,
     autoRefresh: elements.autoRefresh.checked,
     refreshSeconds: clampRefreshSeconds(elements.refreshSeconds.value),
+    classPreferences: normalizeClassPreferences(classPreferences, codes),
   };
 }
 
@@ -54,6 +63,7 @@ function renderConfig(config) {
   elements.targets.value = config.targetsText || '';
   elements.autoRefresh.checked = Boolean(config.autoRefresh);
   elements.refreshSeconds.value = clampRefreshSeconds(config.refreshSeconds);
+  classPreferences = normalizeClassPreferences(config.classPreferences);
 }
 
 function parseCourseCodes(text) {
@@ -61,9 +71,132 @@ function parseCourseCodes(text) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'));
-  const invalid = lines.filter((line) => !/^[A-Za-z][A-Za-z0-9_-]{2,30}$/.test(line));
+  const invalid = lines.filter((line) => !/^[A-Za-z0-9][A-Za-z0-9_-]{2,30}$/.test(line));
   const codes = [...new Set(lines.filter((line) => !invalid.includes(line)).map((line) => line.toUpperCase()))];
   return { codes, invalid };
+}
+
+function normalizeClassPreferences(value, allowedCodes = null) {
+  const allowed = allowedCodes ? new Set(allowedCodes) : null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [rawCode, rawPreference] of Object.entries(value)) {
+    const code = String(rawCode || '').trim().toUpperCase();
+    if (!/^[A-Z0-9][A-Z0-9_-]{2,30}$/.test(code) || (allowed && !allowed.has(code))) continue;
+    if (!rawPreference || typeof rawPreference !== 'object' || !rawPreference.classId) continue;
+    normalized[code] = {
+      classId: String(rawPreference.classId || ''),
+      className: String(rawPreference.className || ''),
+      teachers: Array.isArray(rawPreference.teachers)
+        ? rawPreference.teachers.map((name) => String(name || '').trim()).filter(Boolean)
+        : [],
+      schedule: String(rawPreference.schedule || ''),
+      location: String(rawPreference.location || ''),
+    };
+  }
+  return normalized;
+}
+
+async function loadScheduleCatalog() {
+  try {
+    const response = await fetch(chrome.runtime.getURL(SCHEDULE_CATALOG_URL));
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const catalog = await response.json();
+    if (!catalog?.courses || typeof catalog.courses !== 'object') throw new Error('排课数据格式无效');
+    scheduleCatalog = catalog;
+  } catch (error) {
+    scheduleCatalog = { courses: {}, courseCount: 0, classCount: 0, error: String(error?.message || error) };
+  }
+}
+
+function classOptionLabel(item) {
+  const teachers = Array.isArray(item.teachers) && item.teachers.length
+    ? item.teachers.join('、')
+    : '教师待定';
+  const timeMatch = String(item.schedule || '').match(/星期[一二三四五六日天]\([^)]*\)/);
+  const time = timeMatch?.[0] || String(item.schedule || '').slice(0, 22) || '时间待定';
+  const location = String(item.location || '').trim();
+  return [item.className, teachers, time, location].filter(Boolean).join('｜');
+}
+
+function updatePreferenceSummary(codes) {
+  const configured = codes.filter((code) => classPreferences[code]?.classId).length;
+  elements.preferenceSummary.textContent = `${configured}/${codes.length} 门已设置`;
+}
+
+function renderPreferenceEditor(codes = parseCourseCodes(elements.targets.value).codes) {
+  elements.preferenceRows.replaceChildren();
+  elements.preferenceCard.hidden = !codes.length;
+  if (!codes.length) return;
+
+  for (const code of codes) {
+    const course = scheduleCatalog.courses?.[code];
+    const row = document.createElement('div');
+    row.className = 'preference-row';
+    const heading = document.createElement('div');
+    heading.className = 'preference-course';
+    const title = document.createElement('strong');
+    title.textContent = `${code}${course?.name ? ` ${course.name}` : ''}`;
+    title.title = title.textContent;
+    const count = document.createElement('span');
+    count.textContent = course?.classes?.length ? `${course.classes.length} 个班` : '暂无排课数据';
+    heading.append(title, count);
+    row.appendChild(heading);
+
+    if (!course?.classes?.length) {
+      const empty = document.createElement('div');
+      empty.className = 'preference-empty';
+      empty.textContent = '排课表中未找到该课程，监听时将从网页实际出现的可用班中选择。';
+      row.appendChild(empty);
+      elements.preferenceRows.appendChild(row);
+      continue;
+    }
+
+    const select = document.createElement('select');
+    select.dataset.courseCode = code;
+    select.setAttribute('aria-label', `${code} 教师与班级偏好`);
+    const automatic = document.createElement('option');
+    automatic.value = '';
+    automatic.textContent = '不指定（任一可用班）';
+    select.appendChild(automatic);
+    for (const classItem of course.classes) {
+      const option = document.createElement('option');
+      option.value = classItem.id;
+      option.textContent = classOptionLabel(classItem);
+      select.appendChild(option);
+    }
+    const currentId = classPreferences[code]?.classId || '';
+    select.value = course.classes.some((item) => item.id === currentId) ? currentId : '';
+    if (!select.value && currentId) delete classPreferences[code];
+    select.addEventListener('change', async () => {
+      const selected = course.classes.find((item) => item.id === select.value);
+      if (selected) {
+        classPreferences[code] = {
+          classId: selected.id,
+          className: selected.className,
+          teachers: Array.isArray(selected.teachers) ? selected.teachers : [],
+          schedule: selected.schedule || '',
+          location: selected.location || '',
+        };
+      } else {
+        delete classPreferences[code];
+      }
+      updatePreferenceSummary(codes);
+      await saveConfig(false);
+    });
+    row.appendChild(select);
+    elements.preferenceRows.appendChild(row);
+  }
+  updatePreferenceSummary(codes);
+}
+
+function guideToPreferences() {
+  elements.importSuccess.hidden = true;
+  if (elements.preferenceCard.hidden) return;
+  elements.preferenceCard.classList.remove('is-guided');
+  void elements.preferenceCard.offsetWidth;
+  elements.preferenceCard.classList.add('is-guided');
+  elements.preferenceCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderStatus(status, running) {
@@ -132,7 +265,7 @@ function creditSummaryText(summary) {
 function showImportSuccess(codes, creditSummary) {
   const preview = codes.slice(0, 8).join('、');
   const remainder = codes.length > 8 ? ` 等 ${codes.length} 门` : '';
-  elements.importSuccessText.textContent = `已导入 ${codes.length} 门课程：\n${preview}${remainder}\n\n${creditSummaryText(creditSummary)}`;
+  elements.importSuccessText.textContent = `已导入 ${codes.length} 门课程：\n${preview}${remainder}\n\n${creditSummaryText(creditSummary)}\n\n下一步：设置偏好教师或教学班。`;
   elements.importSuccess.hidden = false;
 }
 
@@ -145,6 +278,8 @@ async function saveConfig(showMessage = true) {
     return null;
   }
   config.targetsText = parsed.codes.join('\n');
+  config.classPreferences = normalizeClassPreferences(classPreferences, parsed.codes);
+  classPreferences = config.classPreferences;
   elements.targets.value = config.targetsText;
   elements.refreshSeconds.value = config.refreshSeconds;
   await chrome.storage.local.set({ config });
@@ -166,8 +301,10 @@ async function initialize() {
   const [local, session] = await Promise.all([
     chrome.storage.local.get(['config', 'running', 'latestStatus', 'loginConfig', 'creditSummary']),
     chrome.storage.session.get('cquptLoginSession'),
+    loadScheduleCatalog(),
   ]);
   renderConfig({ ...DEFAULT_CONFIG, ...(local.config || {}) });
+  renderPreferenceEditor();
   const loginConfig = local.loginConfig || {};
   const loginSession = session.cquptLoginSession || {};
   elements.studentId.value = loginConfig.studentId || loginSession.studentId || '';
@@ -291,7 +428,7 @@ function collectPlanCoursesInFrame() {
   const compact = (value) => String(value || '').trim().replace(/[\s\u3000]+/g, ' ');
   const normalized = (value) => compact(value).replace(/\s+/g, '').toUpperCase();
   const textOf = (element) => compact(element?.innerText || element?.textContent || '');
-  const codePattern = /^[A-Z][A-Z0-9_-]{2,30}$/;
+  const codePattern = /^[A-Z0-9][A-Z0-9_-]{2,30}$/;
   const categories = ['公共必修', '公共基础', '专业基础', '专业课', '自选课', '其他培养环节'];
   const categoryOf = (value) => categories.find((category) => String(value || '').includes(category)) || '';
   const numberOf = (value) => {
@@ -765,9 +902,12 @@ elements.planGuide.addEventListener('click', async () => {
 
     const currentConfig = readConfig();
     currentConfig.targetsText = codes.join('\n');
+    currentConfig.classPreferences = normalizeClassPreferences(classPreferences, codes);
+    classPreferences = currentConfig.classPreferences;
     elements.targets.value = currentConfig.targetsText;
     const creditSummary = buildCreditSummary(planReports, codes);
     await chrome.storage.local.set({ config: currentConfig, creditSummary, running: false, reloadCount: 0 });
+    renderPreferenceEditor(codes);
     renderCreditComparison(creditSummary);
     const status = {
       tone: 'ready',
@@ -778,9 +918,8 @@ elements.planGuide.addEventListener('click', async () => {
     renderStatus(status, false);
     elements.planGuide.textContent = `已导入 ${codes.length} 门`;
     try {
-      const response = await chrome.tabs.sendMessage(tab.id, { type: 'CQUPT_SHOW_IMPORT_SUCCESS', codes, creditSummary });
-      if (response?.ok) window.close();
-      else showImportSuccess(codes, creditSummary);
+      await chrome.tabs.sendMessage(tab.id, { type: 'CQUPT_SHOW_IMPORT_SUCCESS', codes, creditSummary });
+      showImportSuccess(codes, creditSummary);
     } catch {
       showImportSuccess(codes, creditSummary);
     }
@@ -821,6 +960,7 @@ elements.toggleLoginPassword.addEventListener('click', () => {
 });
 elements.targets.addEventListener('input', () => {
   renderCreditComparison(null);
+  renderPreferenceEditor();
   chrome.storage.local.remove('creditSummary').catch(() => {});
 });
 elements.oneClickLogin.addEventListener('click', async () => {
@@ -853,7 +993,7 @@ elements.logout.addEventListener('click', async () => {
   }
 });
 elements.dismissImportSuccess.addEventListener('click', () => {
-  elements.importSuccess.hidden = true;
+  guideToPreferences();
 });
 
 async function startListening() {

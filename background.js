@@ -4,6 +4,7 @@ const DEFAULT_CONFIG = {
   targetsText: '',
   autoRefresh: true,
   refreshSeconds: 15,
+  classPreferences: {},
 };
 
 const LOGIN_SESSION_KEY = 'cquptLoginSession';
@@ -192,6 +193,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CQUPT_GET_TAB_CONTEXT') {
     sendResponse({ tabId: sender.tab?.id ?? null, frameId: sender.frameId ?? 0 });
     return;
+  }
+
+  if (message.type === 'CQUPT_OPEN_POPUP') {
+    (async () => {
+      if (typeof chrome.action.openPopup !== 'function') {
+        sendResponse({ ok: false, error: '当前浏览器不支持自动打开扩展弹窗' });
+        return;
+      }
+      await chrome.action.openPopup();
+      sendResponse({ ok: true });
+    })().catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
+    return true;
   }
 
   if (message.type === 'CQUPT_STATUS') {

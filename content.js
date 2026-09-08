@@ -1,11 +1,11 @@
 'use strict';
 
 (() => {
-  const HELPER_VERSION = '2.5.0';
+  const HELPER_VERSION = '2.6.0';
   if (globalThis.__CQUPT_COURSE_HELPER_VERSION__ === HELPER_VERSION) return;
   globalThis.__CQUPT_COURSE_HELPER_VERSION__ = HELPER_VERSION;
 
-  const MIN_REFRESH_SECONDS = 10;
+  const MIN_REFRESH_SECONDS = 1;
   const MAX_REFRESH_SECONDS = 600;
   const MAX_RELOADS = 120;
   const SCAN_INTERVAL_MS = 800;
@@ -22,6 +22,7 @@
     targetsText: '',
     autoRefresh: true,
     refreshSeconds: 15,
+    classPreferences: {},
   };
 
   let config = { ...DEFAULT_CONFIG };
@@ -76,7 +77,7 @@
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith('#'))
       .map(normalizeCourseCode)
-      .filter((code) => /^[A-Z][A-Z0-9_-]{2,30}$/.test(code));
+      .filter((code) => /^[A-Z0-9][A-Z0-9_-]{2,30}$/.test(code));
     return [...new Set(codes)].map((code) => ({ id: code, code }));
   }
 
@@ -95,6 +96,9 @@
         category: labels.findIndex((label) => /课程类别|课程类型/.test(label)),
         credits: labels.findIndex((label) => /^学分$|课程学分/.test(label)),
         className: labels.findIndex((label) => /班级名称|教学班|上课班级/.test(label)),
+        teacher: labels.findIndex((label) => /任课教师|授课教师|教师/.test(label)),
+        schedule: labels.findIndex((label) => /上课时间|上课信息|授课时间/.test(label)),
+        location: labels.findIndex((label) => /上课地点|授课地点|教室/.test(label)),
         status: labels.findIndex((label) => /选课状态|状态|余量|容量/.test(label)),
       };
     }
@@ -139,7 +143,7 @@
 
   function readRow(row, headers) {
     const cells = Array.from(row.cells || []);
-    const courseCodePattern = /^[A-Z][A-Z0-9_-]{2,30}$/;
+    const courseCodePattern = /^[A-Z0-9][A-Z0-9_-]{2,30}$/;
     let actualCodeIndex = headers.code;
     if (!courseCodePattern.test(normalizeCourseCode(textOf(cells[actualCodeIndex])))) {
       actualCodeIndex = cells.findIndex((cell) => courseCodePattern.test(normalizeCourseCode(textOf(cell))));
@@ -153,6 +157,9 @@
       category: textOf(adjustedCell(headers.category)),
       credits: textOf(adjustedCell(headers.credits)),
       className: textOf(adjustedCell(headers.className)),
+      teacher: textOf(adjustedCell(headers.teacher)),
+      schedule: textOf(adjustedCell(headers.schedule)),
+      location: textOf(adjustedCell(headers.location)),
       status: textOf(adjustedCell(headers.status)),
       text: textOf(row),
     };
@@ -177,7 +184,7 @@
         seenRows.add(row);
         const record = readRow(row, headers);
         const code = normalizeCourseCode(record.code);
-        if (/^[A-Z][A-Z0-9_-]{2,30}$/.test(code) && rowLooksSelected(record)) {
+        if (/^[A-Z0-9][A-Z0-9_-]{2,30}$/.test(code) && rowLooksSelected(record)) {
           const previous = courses.get(code);
           const creditMatch = String(record.credits || '').replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
           const credits = creditMatch ? Number.parseFloat(creditMatch[0]) : null;
@@ -377,7 +384,7 @@
     panel.style.cssText = [
       'position:fixed', 'inset:0', 'z-index:2147483647', 'display:flex', 'align-items:center', 'justify-content:center',
       'padding:24px', 'background:rgba(15,23,42,.58)', 'font:16px/1.5 system-ui,"Microsoft YaHei",sans-serif',
-      'pointer-events:none', 'opacity:0',
+      'pointer-events:auto', 'opacity:0',
     ].join(';');
     const card = rootDocument.createElement('section');
     card.style.cssText = [
@@ -392,7 +399,7 @@
     title.textContent = '导入成功';
     title.style.cssText = 'display:block;margin-bottom:8px;color:#166534;font-size:28px';
     const message = rootDocument.createElement('div');
-    message.textContent = `已导入 ${codes.length} 门课程。`;
+    message.textContent = `已导入 ${codes.length} 门课程。请进入扩展设置偏好教师或教学班。`;
     message.style.cssText = 'margin-bottom:14px;color:#166534;font-size:17px';
     const codeList = rootDocument.createElement('div');
     codeList.textContent = codes.join('、');
@@ -423,10 +430,23 @@
       creditBox.textContent = '未能读取页面左上角的最低学分要求，请人工核对。';
       creditBox.style.color = '#9a3412';
     }
+    const preferenceButton = rootDocument.createElement('button');
+    preferenceButton.type = 'button';
+    preferenceButton.textContent = '打开扩展设置班级偏好';
+    preferenceButton.style.cssText = 'width:100%;margin-top:14px;padding:11px;border:0;border-radius:9px;color:#fff;background:#16a34a;font-size:15px;font-weight:750;cursor:pointer';
     const countdown = rootDocument.createElement('div');
-    countdown.textContent = '提示将在 4 秒后自动关闭';
+    countdown.textContent = '提示将在 7 秒后自动关闭';
     countdown.style.cssText = 'margin-top:13px;color:#4b7b5a;font-size:13px';
-    card.append(check, title, message, codeList, creditBox, countdown);
+    preferenceButton.addEventListener('click', async () => {
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'CQUPT_OPEN_POPUP' });
+        if (!response?.ok) throw new Error(response?.error || '当前浏览器不支持自动打开扩展');
+        panel.remove();
+      } catch {
+        countdown.textContent = '请点击浏览器工具栏上的扩展图标，在“教师与班级偏好”中设置。';
+      }
+    });
+    card.append(check, title, message, codeList, creditBox, preferenceButton, countdown);
     panel.appendChild(card);
     rootDocument.body.appendChild(panel);
     panel.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, fill: 'forwards', easing: 'ease-out' });
@@ -434,7 +454,7 @@
       if (!panel.isConnected) return;
       const animation = panel.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 420, fill: 'forwards', easing: 'ease-in' });
       animation.finished.then(() => panel.remove()).catch(() => panel.remove());
-    }, 4000);
+    }, 7000);
   }
 
   async function importPlanSelection() {
@@ -448,7 +468,16 @@
 
     const creditSummary = buildCreditSummaryFromPage(selection.courses);
     const stored = await chrome.storage.local.get('config');
-    const nextConfig = { ...DEFAULT_CONFIG, ...(stored.config || {}), targetsText: codes.join('\n') };
+    const existingPreferences = stored.config?.classPreferences || {};
+    const classPreferences = Object.fromEntries(codes
+      .filter((code) => existingPreferences[code]?.classId)
+      .map((code) => [code, existingPreferences[code]]));
+    const nextConfig = {
+      ...DEFAULT_CONFIG,
+      ...(stored.config || {}),
+      targetsText: codes.join('\n'),
+      classPreferences,
+    };
     wizardActive = false;
     running = false;
     await chrome.storage.local.set({
@@ -578,6 +607,40 @@
     return items[random[0] % items.length];
   }
 
+  function getClassPreference(courseCode) {
+    const preference = config.classPreferences?.[normalizeCourseCode(courseCode)];
+    return preference && typeof preference === 'object' && preference.classId ? preference : null;
+  }
+
+  function preferenceMatchScore(value, preference) {
+    if (!preference) return 0;
+    const text = normalize(value);
+    if (!text) return 0;
+    let score = 0;
+    const className = normalize(preference.className);
+    if (className && text.includes(className)) score += 100;
+    const teachers = Array.isArray(preference.teachers) ? preference.teachers : [];
+    for (const teacher of teachers) {
+      const normalizedTeacher = normalize(teacher);
+      if (normalizedTeacher && text.includes(normalizedTeacher)) score += 40;
+    }
+    const time = String(preference.schedule || '').match(/星期[一二三四五六日天]\([^)]*\)/)?.[0] || '';
+    if (time && text.includes(normalize(time))) score += 25;
+    const location = normalize(preference.location);
+    if (location && text.includes(location)) score += 10;
+    return score;
+  }
+
+  function choosePreferred(items, preference, textForItem) {
+    if (!items.length) return { item: null, matched: false };
+    if (!preference) return { item: chooseRandom(items), matched: false };
+    const scored = items.map((item) => ({ item, score: preferenceMatchScore(textForItem(item), preference) }));
+    const bestScore = Math.max(...scored.map((entry) => entry.score));
+    if (bestScore <= 0) return { item: chooseRandom(items), matched: false };
+    const best = scored.filter((entry) => entry.score === bestScore).map((entry) => entry.item);
+    return { item: chooseRandom(best), matched: true };
+  }
+
   function activateSelector(control) {
     control.click();
     if (!control.checked) {
@@ -605,7 +668,7 @@
         if (!isClassArea || !rowText || CLOSED_TEXT.test(rowText) || DANGER_TEXT.test(rowText)) continue;
         if (row?.querySelectorAll?.('th').length && !row.querySelectorAll('td').length) continue;
         seen.add(control);
-        candidates.push(control);
+        candidates.push({ control, row, text: rowText });
       }
     }
     return candidates;
@@ -724,7 +787,7 @@
     refreshTimer = window.setTimeout(reloadCurrentCourseFrame, config.refreshSeconds * 1000 + jitter);
   }
 
-  async function onReady(item, signature, availableClassCount = 1) {
+  async function onReady(item, signature, availableClassCount = 1, preferenceMatched = false) {
     cancelRefresh();
     const course = `${item.record.code} ${item.record.name}`.trim();
     sendStatus(`发现可操作目标：${course}`, 'ready');
@@ -739,9 +802,14 @@
       if (courseKey !== openedCourseKey) {
         openedCourseKey = courseKey;
         try {
-          pendingClassSelection = { course, startedAt: Date.now() };
+          pendingClassSelection = {
+            course,
+            courseCode: normalizeCourseCode(item.record.code),
+            preference: getClassPreference(item.record.code),
+            startedAt: Date.now(),
+          };
           item.picker.click();
-          sendStatus(`已打开“${course}”的班级列表，正在选择任一可用班…`, 'ready');
+          sendStatus(`已打开“${course}”的班级列表，正在按偏好选择可用班…`, 'ready');
           scheduleReactiveScan(100);
           return;
         } catch {
@@ -753,7 +821,9 @@
       activateSelector(item.selector);
       sendStatus(
         availableClassCount > 1
-          ? `“${course}”共有 ${availableClassCount} 个可用班，已随机勾选其中一个，请核对后手动提交。`
+          ? preferenceMatched
+            ? `“${course}”共有 ${availableClassCount} 个可用班，已优先勾选偏好班级，请核对后手动提交。`
+            : `“${course}”共有 ${availableClassCount} 个可用班，已勾选其中一个可用班，请核对后手动提交。`
           : `已勾选“${course}”的唯一可用班，请核对后手动提交。`,
         'ready',
       );
@@ -771,13 +841,25 @@
       const classSelectors = findOpenClassSelectors();
       if (classSelectors.length) {
         const course = pendingClassSelection.course;
-        const alreadySelected = classSelectors.find((control) => control.checked);
-        const availableSelectors = classSelectors.filter((control) => !control.checked);
-        if (!alreadySelected) activateSelector(chooseRandom(availableSelectors));
+        const preference = pendingClassSelection.preference;
+        const alreadySelected = classSelectors.find((entry) => entry.control.checked);
+        const availableSelectors = classSelectors.filter((entry) => !entry.control.checked);
+        const choice = choosePreferred(
+          availableSelectors,
+          preference,
+          (entry) => entry.text,
+        );
+        if (!alreadySelected && choice.item) activateSelector(choice.item.control);
         pendingClassSelection = null;
         sendStatus(
           classSelectors.length > 1
-            ? `“${course}”共有 ${classSelectors.length} 个可用班，${alreadySelected ? '页面已有选中班级' : '已随机勾选其中一个'}，请核对后手动提交。`
+            ? alreadySelected
+              ? `“${course}”共有 ${classSelectors.length} 个可用班，页面已有选中班级，请核对后手动提交。`
+              : choice.matched
+                ? `“${course}”共有 ${classSelectors.length} 个可用班，已优先勾选偏好班级，请核对后手动提交。`
+                : preference
+                  ? `“${course}”的偏好班暂不可用，已勾选其他可用班，请核对后手动提交。`
+                  : `“${course}”共有 ${classSelectors.length} 个可用班，已勾选其中一个可用班，请核对后手动提交。`
             : `${alreadySelected ? '页面已选中' : '已勾选'}“${course}”的唯一可用班，请核对后手动提交。`,
           'ready',
         );
@@ -838,7 +920,14 @@
       const readyGroup = targets
         .map((target) => ready.filter((item) => item.target.id === target.id))
         .find((items) => items.length) || ready;
-      await onReady(chooseRandom(readyGroup), signature, readyGroup.length);
+      const courseCode = readyGroup[0]?.target?.code || readyGroup[0]?.record?.code || '';
+      const preference = getClassPreference(courseCode);
+      const choice = choosePreferred(
+        readyGroup,
+        preference,
+        (item) => `${item.record.className} ${item.record.teacher} ${item.record.schedule} ${item.record.location} ${item.record.text}`,
+      );
+      await onReady(choice.item, signature, readyGroup.length, choice.matched);
     } else if (matches.length) {
       const first = matches[0].record;
       sendStatus(`已按课程编号找到：${first.code} ${first.name}；尚未出现可操作入口。`);
@@ -1025,7 +1114,7 @@
     if (window.top !== window) return;
     if (message?.type === 'CQUPT_SHOW_IMPORT_SUCCESS') {
       const codes = Array.isArray(message.codes)
-        ? message.codes.map(normalizeCourseCode).filter((code) => /^[A-Z][A-Z0-9_-]{2,30}$/.test(code))
+        ? message.codes.map(normalizeCourseCode).filter((code) => /^[A-Z0-9][A-Z0-9_-]{2,30}$/.test(code))
         : [];
       const creditSummary = message.creditSummary && typeof message.creditSummary === 'object'
         ? message.creditSummary
