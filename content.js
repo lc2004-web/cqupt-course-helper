@@ -1,7 +1,7 @@
 'use strict';
 
 (() => {
-  const HELPER_VERSION = '2.6.0';
+  const HELPER_VERSION = '2.6.2';
   if (globalThis.__CQUPT_COURSE_HELPER_VERSION__ === HELPER_VERSION) return;
   globalThis.__CQUPT_COURSE_HELPER_VERSION__ = HELPER_VERSION;
 
@@ -18,6 +18,7 @@
   const SERVICE_GATEWAY_TEXT = /^(?:服务|服务大厅|全部服务|办事服务|业务服务)$/;
   const CULTIVATION_GATEWAY_TEXT = /^(?:培养|培养管理|培养服务|培养工作)$/;
   const WIZARD_PANEL_ID = 'cqupt-course-plan-wizard';
+  const COURSE_POLICY = globalThis.CQUPTCoursePolicy;
   const DEFAULT_CONFIG = {
     targetsText: '',
     autoRefresh: true,
@@ -77,7 +78,8 @@
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith('#'))
       .map(normalizeCourseCode)
-      .filter((code) => /^[A-Z0-9][A-Z0-9_-]{2,30}$/.test(code));
+      .filter((code) => /^[A-Z0-9][A-Z0-9_-]{2,30}$/.test(code))
+      .filter((code) => !COURSE_POLICY?.findAutoAssignedCourse(code));
     return [...new Set(codes)].map((code) => ({ id: code, code }));
   }
 
@@ -192,6 +194,7 @@
           const category = categories.find((name) => String(record.category || '').includes(name)) || '';
           courses.set(code, {
             code,
+            name: record.name || previous?.name || '',
             category: category || previous?.category || '',
             credits: Number.isFinite(credits) ? credits : (previous?.credits ?? null),
           });
@@ -254,19 +257,38 @@
     return !style || (style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse');
   }
 
+  function navigationLabelScore(kind, label) {
+    const normalizedLabel = normalize(label).replace(/[^\u4e00-\u9fffa-z0-9]/g, '');
+    if (!normalizedLabel || /(?:通知|公告|新闻|关于|说明|指南|提醒|公示|附件|下载|详情|政策)/.test(normalizedLabel)) return 0;
+    const allowed = kind === 'plan'
+      ? ['培养方案选择', '培养计划制定', '培养计划', '培养方案']
+      : ['课程网上选课管理', '网上选课管理', '课程网上选课', '选课管理'];
+    let best = 0;
+    for (const item of allowed) {
+      const normalizedItem = normalize(item);
+      if (normalizedLabel === normalizedItem) best = Math.max(best, 100);
+      else if ((normalizedLabel.startsWith(normalizedItem) || normalizedLabel.endsWith(normalizedItem))
+        && normalizedLabel.length - normalizedItem.length <= 8) {
+        best = Math.max(best, 70 - (normalizedLabel.length - normalizedItem.length));
+      }
+    }
+    return best;
+  }
+
   function findNavigationControl(kind) {
-    const pattern = kind === 'plan' ? PLAN_MENU_TEXT : COURSE_MENU_TEXT;
-    const exclusions = kind === 'plan' ? /(?:选课管理|课程网上选课)/ : /(?:培养方案|培养计划)/;
     const candidates = getAccessibleDocuments().flatMap((currentDocument) =>
       Array.from(currentDocument.querySelectorAll('a, button, [role="menuitem"], [onclick]')),
     );
     return candidates
-      .map((control) => ({ control, label: controlLabel(control) }))
-      .filter(({ control, label }) =>
-        label && pattern.test(label) && !exclusions.test(label) && !DANGER_TEXT.test(label)
+      .map((control) => {
+        const label = controlLabel(control);
+        return { control, label, score: navigationLabelScore(kind, label) };
+      })
+      .filter(({ control, label, score }) =>
+        label && score > 0 && !DANGER_TEXT.test(label)
           && controlIsVisible(control) && !control.disabled && control.getAttribute('aria-disabled') !== 'true',
       )
-      .sort((a, b) => a.label.length - b.label.length)[0]?.control || null;
+      .sort((a, b) => b.score - a.score || a.label.length - b.label.length)[0]?.control || null;
   }
 
   function findGatewayControl(labelPattern) {
@@ -374,7 +396,7 @@
     rootDocument.body.appendChild(panel);
   }
 
-  function showPlanImportSuccess(codes, creditSummary) {
+  function showPlanImportSuccess(codes, creditSummary, excludedCourses = []) {
     const rootDocument = document;
     if (!rootDocument.body) return;
     rootDocument.getElementById(WIZARD_PANEL_ID)?.remove();
@@ -399,10 +421,12 @@
     title.textContent = '导入成功';
     title.style.cssText = 'display:block;margin-bottom:8px;color:#166534;font-size:28px';
     const message = rootDocument.createElement('div');
-    message.textContent = `已导入 ${codes.length} 门课程。请进入扩展设置偏好教师或教学班。`;
+    message.textContent = codes.length
+      ? `已加入 ${codes.length} 门抢课目标。请进入扩展设置偏好教师或教学班。`
+      : '所选课程均由学校统一分班，无需加入抢课目标。';
     message.style.cssText = 'margin-bottom:14px;color:#166534;font-size:17px';
     const codeList = rootDocument.createElement('div');
-    codeList.textContent = codes.join('、');
+    codeList.textContent = codes.length ? codes.join('、') : '暂无需要自行选择的课程';
     codeList.style.cssText = 'max-height:110px;overflow:hidden;padding:11px;color:#14532d;background:#dcfce7;border-radius:9px;font:15px/1.6 ui-monospace,Consolas,monospace';
     const creditBox = rootDocument.createElement('div');
     creditBox.style.cssText = 'margin-top:14px;padding:13px;text-align:left;color:#334155;background:#fff;border:1px solid #bbf7d0;border-radius:10px;font-size:14px';
@@ -446,7 +470,13 @@
         countdown.textContent = '请点击浏览器工具栏上的扩展图标，在“教师与班级偏好”中设置。';
       }
     });
-    card.append(check, title, message, codeList, creditBox, preferenceButton, countdown);
+    const exclusionBox = rootDocument.createElement('div');
+    exclusionBox.hidden = !excludedCourses.length;
+    exclusionBox.textContent = excludedCourses.length
+      ? `已跳过学校统一分班课程：${excludedCourses.map((course) => `${course.code} ${course.name}`).join('、')}`
+      : '';
+    exclusionBox.style.cssText = 'margin-top:12px;padding:10px;text-align:left;color:#854d0e;background:#fef9c3;border:1px solid #fde047;border-radius:9px;font-size:13px';
+    card.append(check, title, message, codeList, exclusionBox, creditBox, preferenceButton, countdown);
     panel.appendChild(card);
     rootDocument.body.appendChild(panel);
     panel.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 180, fill: 'forwards', easing: 'ease-out' });
@@ -459,14 +489,17 @@
 
   async function importPlanSelection() {
     const selection = extractSelectedCourseData();
-    const codes = selection.codes;
-    if (!codes.length) {
+    if (!selection.codes.length) {
       setWizardMessage('尚未识别到已勾选课程。请先在培养方案表格中勾选课程，再点击本按钮。', 'warn');
       sendStatus('培养方案中尚未识别到已勾选课程。', 'warn');
       return;
     }
 
     const creditSummary = buildCreditSummaryFromPage(selection.courses);
+    const filtered = COURSE_POLICY?.filterCourseCodes(selection.codes, selection.courses)
+      || { includedCodes: selection.codes, excluded: [] };
+    const codes = filtered.includedCodes;
+    const excludedCourses = filtered.excluded;
     const stored = await chrome.storage.local.get('config');
     const existingPreferences = stored.config?.classPreferences || {};
     const classPreferences = Object.fromEntries(codes
@@ -483,16 +516,19 @@
     await chrome.storage.local.set({
       config: nextConfig,
       creditSummary,
+      autoAssignedExclusions: excludedCourses,
       wizardActive: false,
       running: false,
       reloadCount: 0,
       latestStatus: {
         tone: 'ready',
-        text: `已导入 ${codes.length} 门课程。`,
+        text: excludedCourses.length
+          ? `已加入 ${codes.length} 门目标，跳过 ${excludedCourses.length} 门学校统一分班课程。`
+          : `已导入 ${codes.length} 门课程。`,
         updatedAt: Date.now(),
       },
     });
-    showPlanImportSuccess(codes, creditSummary);
+    showPlanImportSuccess(codes, creditSummary, excludedCourses);
   }
 
   async function startPlanGuide() {
@@ -897,6 +933,7 @@
         if (seenRows.has(row)) continue;
         seenRows.add(row);
         const record = readRow(row, headers);
+        if (COURSE_POLICY?.findAutoAssignedCourse(record.code, record.name)) continue;
         for (const target of targets) {
           if (!matchesCourse(record, target)) continue;
           const picker = findClassPicker(record);
@@ -1119,7 +1156,10 @@
       const creditSummary = message.creditSummary && typeof message.creditSummary === 'object'
         ? message.creditSummary
         : { available: false, items: [], allMet: false, unknownCourseCodes: [] };
-      showPlanImportSuccess([...new Set(codes)], creditSummary);
+      const excludedCourses = Array.isArray(message.excludedCourses)
+        ? message.excludedCourses.filter((course) => COURSE_POLICY?.findAutoAssignedCourse(course?.code, course?.name))
+        : [];
+      showPlanImportSuccess([...new Set(codes)], creditSummary, excludedCourses);
       sendResponse({ ok: true });
       return;
     }

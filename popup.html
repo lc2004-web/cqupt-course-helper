@@ -53,6 +53,11 @@
     <label class="field-label" for="targets">目标课程编号</label>
     <textarea id="targets" spellcheck="false" placeholder="每行一个准确课程编号，例如：&#10;M0130005&#10;M0150023"></textarea>
 
+    <section id="autoAssignedNotice" class="auto-assigned-notice" hidden>
+      <strong>已跳过学校统一分班课程</strong>
+      <p id="autoAssignedNoticeText"></p>
+    </section>
+
     <section id="preferenceCard" class="preference-card" hidden>
       <div class="preference-heading">
         <strong>教师与班级偏好</strong>
@@ -101,6 +106,7 @@
     </div>
     <footer class="author-footer">作者邮箱：2741893758@qq.com，如有问题请反馈</footer>
   </main>
+  <script src="course-policy.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

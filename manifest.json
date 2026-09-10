@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CQUPT 研究生选课辅助器",
-  "version": "2.6.0",
-  "description": "从培养方案导入课程并核对最低学分，支持按排课表设置教师与教学班偏好，监听时优先选择偏好班；最终提交由用户确认。",
+  "version": "2.6.2",
+  "description": "从培养方案导入课程并核对最低学分，自动过滤校本部硕士统一分班课程，支持教师与教学班偏好；最终提交由用户确认。",
   "permissions": [
     "activeTab",
     "notifications",
@@ -33,6 +33,7 @@
         "https://gs.cqupt.edu.cn/*"
       ],
       "js": [
+        "course-policy.js",
         "content.js"
       ],
       "run_at": "document_idle",

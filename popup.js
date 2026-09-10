@@ -9,8 +9,10 @@ const DEFAULT_CONFIG = {
 
 const LOGIN_URL = 'https://ids.cqupt.edu.cn/authserver/login?service=https%3A%2F%2Fi.cqupt.edu.cn%2Flogin%23%2F';
 const SCHEDULE_CATALOG_URL = 'course-schedule-2026-2027.json';
+const COURSE_POLICY = globalThis.CQUPTCoursePolicy;
 let scheduleCatalog = { courses: {}, courseCount: 0, classCount: 0 };
 let classPreferences = {};
+let autoAssignedExclusions = [];
 const elements = {
   loginCard: document.getElementById('loginCard'),
   courseWorkspace: document.getElementById('courseWorkspace'),
@@ -23,6 +25,8 @@ const elements = {
   oneClickLogin: document.getElementById('oneClickLogin'),
   loginStatus: document.getElementById('loginStatus'),
   targets: document.getElementById('targets'),
+  autoAssignedNotice: document.getElementById('autoAssignedNotice'),
+  autoAssignedNoticeText: document.getElementById('autoAssignedNoticeText'),
   preferenceCard: document.getElementById('preferenceCard'),
   preferenceSummary: document.getElementById('preferenceSummary'),
   preferenceRows: document.getElementById('preferenceRows'),
@@ -64,6 +68,27 @@ function renderConfig(config) {
   elements.autoRefresh.checked = Boolean(config.autoRefresh);
   elements.refreshSeconds.value = clampRefreshSeconds(config.refreshSeconds);
   classPreferences = normalizeClassPreferences(config.classPreferences);
+}
+
+function normalizeExclusions(value) {
+  if (!Array.isArray(value)) return [];
+  const result = [];
+  const seen = new Set();
+  for (const raw of value) {
+    const policyCourse = COURSE_POLICY?.findAutoAssignedCourse(raw?.code, raw?.name);
+    if (!policyCourse || seen.has(policyCourse.code)) continue;
+    result.push({ code: policyCourse.code, name: policyCourse.name });
+    seen.add(policyCourse.code);
+  }
+  return result;
+}
+
+function renderAutoAssignedNotice(exclusions = autoAssignedExclusions) {
+  autoAssignedExclusions = normalizeExclusions(exclusions);
+  elements.autoAssignedNotice.hidden = !autoAssignedExclusions.length;
+  elements.autoAssignedNoticeText.textContent = autoAssignedExclusions
+    .map((course) => `${course.code} ${course.name}`)
+    .join('、');
 }
 
 function parseCourseCodes(text) {
@@ -262,10 +287,17 @@ function creditSummaryText(summary) {
   return `${summary.allMet ? '已满足最低学分要求' : '尚未满足最低学分要求'}\n${details.join('；')}`;
 }
 
-function showImportSuccess(codes, creditSummary) {
+function showImportSuccess(codes, creditSummary, excludedCourses = autoAssignedExclusions) {
   const preview = codes.slice(0, 8).join('、');
   const remainder = codes.length > 8 ? ` 等 ${codes.length} 门` : '';
-  elements.importSuccessText.textContent = `已导入 ${codes.length} 门课程：\n${preview}${remainder}\n\n${creditSummaryText(creditSummary)}\n\n下一步：设置偏好教师或教学班。`;
+  const targetText = codes.length
+    ? `已加入 ${codes.length} 门抢课目标：\n${preview}${remainder}`
+    : '暂无需要自行选择的课程。';
+  const exclusionText = excludedCourses.length
+    ? `\n\n已跳过学校统一分班课程：\n${excludedCourses.map((course) => `${course.code} ${course.name}`).join('、')}`
+    : '';
+  const nextStep = codes.length ? '\n\n下一步：设置偏好教师或教学班。' : '';
+  elements.importSuccessText.textContent = `${targetText}${exclusionText}\n\n${creditSummaryText(creditSummary)}${nextStep}`;
   elements.importSuccess.hidden = false;
 }
 
@@ -277,14 +309,23 @@ async function saveConfig(showMessage = true) {
     renderStatus(status, false);
     return null;
   }
-  config.targetsText = parsed.codes.join('\n');
-  config.classPreferences = normalizeClassPreferences(classPreferences, parsed.codes);
+  const filtered = COURSE_POLICY?.filterCourseCodes(parsed.codes)
+    || { includedCodes: parsed.codes, excluded: [] };
+  if (filtered.excluded.length) renderAutoAssignedNotice(filtered.excluded);
+  config.targetsText = filtered.includedCodes.join('\n');
+  config.classPreferences = normalizeClassPreferences(classPreferences, filtered.includedCodes);
   classPreferences = config.classPreferences;
   elements.targets.value = config.targetsText;
   elements.refreshSeconds.value = config.refreshSeconds;
-  await chrome.storage.local.set({ config });
+  await chrome.storage.local.set({ config, autoAssignedExclusions });
   if (showMessage) {
-    const status = { tone: 'normal', text: '设置已保存到本机浏览器。', updatedAt: Date.now() };
+    const status = {
+      tone: filtered.excluded.length ? 'warn' : 'normal',
+      text: filtered.excluded.length
+        ? `已过滤 ${filtered.excluded.length} 门学校统一分班课程，其余设置已保存。`
+        : '设置已保存到本机浏览器。',
+      updatedAt: Date.now(),
+    };
     await chrome.storage.local.set({ latestStatus: status });
     const state = await chrome.storage.local.get('running');
     renderStatus(status, state.running);
@@ -299,11 +340,12 @@ async function activeTabIsSupported() {
 
 async function initialize() {
   const [local, session] = await Promise.all([
-    chrome.storage.local.get(['config', 'running', 'latestStatus', 'loginConfig', 'creditSummary']),
+    chrome.storage.local.get(['config', 'running', 'latestStatus', 'loginConfig', 'creditSummary', 'autoAssignedExclusions']),
     chrome.storage.session.get('cquptLoginSession'),
     loadScheduleCatalog(),
   ]);
   renderConfig({ ...DEFAULT_CONFIG, ...(local.config || {}) });
+  renderAutoAssignedNotice(local.autoAssignedExclusions);
   renderPreferenceEditor();
   const loginConfig = local.loginConfig || {};
   const loginSession = session.cquptLoginSession || {};
@@ -463,6 +505,7 @@ function collectPlanCoursesInFrame() {
     const rows = Array.from(table.rows || []);
     let headerIndex = -1;
     let codeIndex = -1;
+    let nameIndex = -1;
     let categoryIndex = -1;
     let creditIndex = -1;
     for (let rowIndex = 0; rowIndex < Math.min(rows.length, 6); rowIndex += 1) {
@@ -471,6 +514,7 @@ function collectPlanCoursesInFrame() {
       if (foundIndex >= 0) {
         headerIndex = rowIndex;
         codeIndex = foundIndex;
+        nameIndex = labels.findIndex((label) => /课程名称|课程名/.test(label));
         categoryIndex = labels.findIndex((label) => /课程类别|课程类型/.test(label));
         creditIndex = labels.findIndex((label) => /^学分$|课程学分/.test(label));
         break;
@@ -490,6 +534,7 @@ function collectPlanCoursesInFrame() {
       if (!codePattern.test(code)) continue;
       const offset = actualCodeIndex >= 0 ? actualCodeIndex - codeIndex : 0;
       const adjustedCell = (index) => index >= 0 ? cells[index + offset] : null;
+      const name = textOf(adjustedCell(nameIndex));
       const category = categoryOf(textOf(adjustedCell(categoryIndex)));
       const credits = numberOf(textOf(adjustedCell(creditIndex)));
       visibleCodes.add(code);
@@ -507,6 +552,7 @@ function collectPlanCoursesInFrame() {
       const previous = courses.get(code);
       courses.set(code, {
         code,
+        name: name || previous?.name || '',
         category: category || previous?.category || '',
         credits: Number.isFinite(credits) ? credits : (previous?.credits ?? null),
         selected: explicitlySelected || Boolean(previous?.selected),
@@ -577,10 +623,26 @@ function clickSystemMenuInFrame(kind) {
   const textOf = (element) => String(
     element?.innerText || element?.textContent || element?.value || element?.title || element?.getAttribute?.('aria-label') || '',
   ).trim().replace(/\s+/g, ' ');
-  const wanted = kind === 'plan'
-    ? /培养方案选择|培养计划制定|培养计划|培养方案/
-    : /课程网上选课管理|网上选课管理|课程网上选课|选课管理/;
-  const excluded = kind === 'plan' ? /课程网上选课|选课管理/ : /培养方案|培养计划/;
+  const allowed = kind === 'plan'
+    ? ['培养方案选择', '培养计划制定', '培养计划', '培养方案']
+    : ['课程网上选课管理', '网上选课管理', '课程网上选课', '选课管理'];
+  const normalizedLabel = (value) => (typeof value === 'string' ? value : textOf(value))
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, '')
+    .toLowerCase();
+  const labelScore = (label) => {
+    const normalized = normalizedLabel(label);
+    if (!normalized || /(?:通知|公告|新闻|关于|说明|指南|提醒|公示|附件|下载|详情|政策)/.test(normalized)) return 0;
+    let best = 0;
+    for (const item of allowed) {
+      const expected = normalizedLabel(item);
+      if (normalized === expected) best = Math.max(best, 100);
+      else if ((normalized.startsWith(expected) || normalized.endsWith(expected)) && normalized.length - expected.length <= 8) {
+        best = Math.max(best, 70 - (normalized.length - expected.length));
+      }
+    }
+    return best;
+  };
   const dangerous = /提交|确认|保存|立即选课|退选|删除|清空|撤销/;
   const isVisible = (control) => {
     if (!control || control.nodeType !== 1 || control.getClientRects().length === 0) return false;
@@ -603,10 +665,13 @@ function clickSystemMenuInFrame(kind) {
   visit(window);
   const candidates = documents.flatMap((currentDocument) =>
     Array.from(currentDocument.querySelectorAll('a, button, [role="menuitem"], [onclick]')))
-    .map((control) => ({ control, label: textOf(control) }))
-    .filter(({ control, label }) => label && wanted.test(label) && !excluded.test(label) && !dangerous.test(label)
+    .map((control) => {
+      const label = textOf(control);
+      return { control, label, score: labelScore(label) };
+    })
+    .filter(({ control, label, score }) => label && score > 0 && !dangerous.test(label)
       && isVisible(control) && !control.disabled && control.getAttribute('aria-disabled') !== 'true')
-    .sort((a, b) => a.label.length - b.label.length);
+    .sort((a, b) => b.score - a.score || a.label.length - b.label.length);
   if (!candidates.length) return { clicked: false, url: location.href };
   candidates[0].control.click();
   return { clicked: true, label: candidates[0].label, url: location.href };
@@ -734,13 +799,13 @@ async function ensureHelperInTab(tabId) {
   try {
     await withTimeout(chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      files: ['content.js'],
+      files: ['course-policy.js', 'content.js'],
     }), 5000, '注入全部页面框架超时');
     return true;
   } catch {
     await withTimeout(chrome.scripting.executeScript({
       target: { tabId },
-      files: ['content.js'],
+      files: ['course-policy.js', 'content.js'],
     }), 2000, '注入系统主页面超时');
     return false;
   }
@@ -883,9 +948,9 @@ elements.planGuide.addEventListener('click', async () => {
     const finalizedCodes = [...new Set(planReports
       .filter((report) => report.selectionControlCount === 0)
       .flatMap((report) => report.visibleCodes))];
-    const codes = selectedCodes.length ? selectedCodes : finalizedCodes;
+    const rawCodes = selectedCodes.length ? selectedCodes : finalizedCodes;
 
-    if (!codes.length) {
+    if (!rawCodes.length) {
       const diagnostic = reports.reduce((total, report) => total + Number(report.courseTableCount || 0), 0);
       await navigateSystemSection('plan');
       const status = {
@@ -900,28 +965,46 @@ elements.planGuide.addEventListener('click', async () => {
       return;
     }
 
+    const courseDetails = planReports.flatMap((report) => report.courses || []);
+    const filtered = COURSE_POLICY?.filterCourseCodes(rawCodes, courseDetails)
+      || { includedCodes: rawCodes, excluded: [] };
+    const codes = filtered.includedCodes;
+    renderAutoAssignedNotice(filtered.excluded);
     const currentConfig = readConfig();
     currentConfig.targetsText = codes.join('\n');
     currentConfig.classPreferences = normalizeClassPreferences(classPreferences, codes);
     classPreferences = currentConfig.classPreferences;
     elements.targets.value = currentConfig.targetsText;
-    const creditSummary = buildCreditSummary(planReports, codes);
-    await chrome.storage.local.set({ config: currentConfig, creditSummary, running: false, reloadCount: 0 });
+    const creditSummary = buildCreditSummary(planReports, rawCodes);
+    await chrome.storage.local.set({
+      config: currentConfig,
+      creditSummary,
+      autoAssignedExclusions,
+      running: false,
+      reloadCount: 0,
+    });
     renderPreferenceEditor(codes);
     renderCreditComparison(creditSummary);
     const status = {
       tone: 'ready',
-      text: `已导入 ${codes.length} 门课程。`,
+      text: filtered.excluded.length
+        ? `已加入 ${codes.length} 门目标，跳过 ${filtered.excluded.length} 门学校统一分班课程。`
+        : `已导入 ${codes.length} 门课程。`,
       updatedAt: Date.now(),
     };
     await chrome.storage.local.set({ latestStatus: status });
     renderStatus(status, false);
-    elements.planGuide.textContent = `已导入 ${codes.length} 门`;
+    elements.planGuide.textContent = `已加入 ${codes.length} 门`;
     try {
-      await chrome.tabs.sendMessage(tab.id, { type: 'CQUPT_SHOW_IMPORT_SUCCESS', codes, creditSummary });
-      showImportSuccess(codes, creditSummary);
+      await chrome.tabs.sendMessage(tab.id, {
+        type: 'CQUPT_SHOW_IMPORT_SUCCESS',
+        codes,
+        creditSummary,
+        excludedCourses: filtered.excluded,
+      });
+      showImportSuccess(codes, creditSummary, filtered.excluded);
     } catch {
-      showImportSuccess(codes, creditSummary);
+      showImportSuccess(codes, creditSummary, filtered.excluded);
     }
   } catch (error) {
     elements.diagnosticOutput.textContent = `错误：${String(error?.stack || error?.message || error)}`;
@@ -959,6 +1042,7 @@ elements.toggleLoginPassword.addEventListener('click', () => {
   elements.loginPassword.focus({ preventScroll: true });
 });
 elements.targets.addEventListener('input', () => {
+  renderAutoAssignedNotice([]);
   renderCreditComparison(null);
   renderPreferenceEditor();
   chrome.storage.local.remove('creditSummary').catch(() => {});
@@ -1107,6 +1191,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       renderStatus(local.latestStatus, local.running);
     });
     if (changes.creditSummary) renderCreditComparison(changes.creditSummary.newValue);
+    if (changes.autoAssignedExclusions) renderAutoAssignedNotice(changes.autoAssignedExclusions.newValue);
   }
   if (areaName === 'session' && changes.cquptLoginSession) {
     renderAuthGate(Boolean(changes.cquptLoginSession.newValue?.authenticated));
